@@ -8,10 +8,9 @@ interface IERC20 {
 }
 
 contract Tanda {
-    IERC20 public usdcToken; // USDC.e token address
-    
-    // Hardcoded values - can be changed later
-    uint256 public constant PAYMENT_AMOUNT = 100 * 10**6; // 100 USDC.e (6 decimals)
+    IERC20 public immutable usdcToken; // USDC.e token address
+    uint256 public immutable paymentAmount; // Payment amount per cycle
+    uint256 public immutable paymentFrequency; // Payment frequency in seconds (e.g., 30 days = 2592000)
     
     // Participant management
     address[] public participants;
@@ -21,6 +20,7 @@ contract Tanda {
     mapping(address => bool) public hasPaidThisCycle;
     uint256 public currentRecipientIndex; // Who gets the funds this cycle
     uint256 public cycleNumber;
+    uint256 public cycleStartTime; // Timestamp when current cycle started
     
     // Events
     event PaymentReceived(address indexed payer, uint256 amount, uint256 cycle);
@@ -29,9 +29,16 @@ contract Tanda {
     event ParticipantRemoved(address indexed participant);
     event NewCycleStarted(uint256 cycleNumber);
     
-    constructor(address _usdcToken, address[] memory _initialParticipants) {
+    constructor(
+        address _usdcToken,
+        address[] memory _initialParticipants,
+        uint256 _paymentAmount,
+        uint256 _paymentFrequency
+    ) {
         usdcToken = IERC20(_usdcToken);
         require(_initialParticipants.length > 0, "Must have at least one participant");
+        require(_paymentAmount > 0, "Payment amount must be greater than 0");
+        require(_paymentFrequency > 0, "Payment frequency must be greater than 0");
         
         // Add initial participants
         for (uint256 i = 0; i < _initialParticipants.length; i++) {
@@ -40,32 +47,45 @@ contract Tanda {
             isParticipant[_initialParticipants[i]] = true;
         }
         
+        paymentAmount = _paymentAmount;
+        paymentFrequency = _paymentFrequency;
         currentRecipientIndex = 0;
         cycleNumber = 1;
+        cycleStartTime = block.timestamp;
     }
     
     // Pay function - transfers USDC.e and marks as paid
     function pay() external {
         require(isParticipant[msg.sender], "Not a participant");
         require(!hasPaidThisCycle[msg.sender], "Already paid this cycle");
+        require(
+            block.timestamp < cycleStartTime + paymentFrequency,
+            "Payment window for this cycle has expired"
+        );
         
         // Transfer USDC.e from user to contract
         require(
-            usdcToken.transferFrom(msg.sender, address(this), PAYMENT_AMOUNT),
+            usdcToken.transferFrom(msg.sender, address(this), paymentAmount),
             "Payment transfer failed"
         );
         
         hasPaidThisCycle[msg.sender] = true;
-        emit PaymentReceived(msg.sender, PAYMENT_AMOUNT, cycleNumber);
+        emit PaymentReceived(msg.sender, paymentAmount, cycleNumber);
     }
     
     // Claim function - sends all funds to current recipient and starts new cycle
+    // Can be called if either: (1) everyone has paid, OR (2) payment frequency period has passed
     function claim() external {
         require(
             hasPaidThisCycle[participants[currentRecipientIndex]],
             "Current recipient hasn't paid yet"
         );
-        require(allHavePaid(), "Not everyone has paid yet");
+        
+        // Allow claiming if everyone paid OR if payment frequency period has passed
+        require(
+            allHavePaid() || block.timestamp >= cycleStartTime + paymentFrequency,
+            "Cannot claim yet - not everyone has paid and payment window hasn't expired"
+        );
         
         uint256 contractBalance = usdcToken.balanceOf(address(this));
         require(contractBalance > 0, "No funds to claim");
@@ -88,6 +108,7 @@ contract Tanda {
         // Move to next recipient (wrap around)
         currentRecipientIndex = (currentRecipientIndex + 1) % participants.length;
         cycleNumber++;
+        cycleStartTime = block.timestamp; // Reset cycle start time
         
         emit NewCycleStarted(cycleNumber);
     }

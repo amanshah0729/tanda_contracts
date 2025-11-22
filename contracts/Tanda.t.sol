@@ -50,6 +50,7 @@ contract TandaTest is Test {
     address charlie = address(0x3);
     
     uint256 constant PAYMENT_AMOUNT = 100 * 10**6; // 100 USDC.e
+    uint256 constant PAYMENT_FREQUENCY = 30 days; // 30 days in seconds
     
     function setUp() public {
         // Deploy mock USDC token
@@ -61,8 +62,13 @@ contract TandaTest is Test {
         initialParticipants[1] = bob;
         initialParticipants[2] = charlie;
         
-        // Deploy Tanda contract
-        tanda = new Tanda(address(usdc), initialParticipants);
+        // Deploy Tanda contract with payment amount and frequency
+        tanda = new Tanda(
+            address(usdc),
+            initialParticipants,
+            PAYMENT_AMOUNT,
+            PAYMENT_FREQUENCY
+        );
         
         // Give each participant enough USDC
         usdc.mint(alice, 1000 * 10**6);
@@ -84,6 +90,11 @@ contract TandaTest is Test {
         require(tanda.cycleNumber() == 1, "Initial cycle should be 1");
         require(tanda.getVaultBalance() == 0, "Initial vault should be empty");
         
+        // Check payment parameters
+        require(tanda.paymentAmount() == PAYMENT_AMOUNT, "Payment amount should match");
+        require(tanda.paymentFrequency() == PAYMENT_FREQUENCY, "Payment frequency should match");
+        require(tanda.cycleStartTime() > 0, "Cycle start time should be set");
+        
         // Check all participants are registered
         address[] memory participants = tanda.getParticipants();
         require(participants.length == 3, "Should have 3 participants");
@@ -103,10 +114,10 @@ contract TandaTest is Test {
         require(tanda.hasPaidThisCycle(charlie) == false, "Charlie should not be paid");
         
         // Check vault balance increased
-        require(tanda.getVaultBalance() == PAYMENT_AMOUNT, "Vault should have 100 USDC");
+        require(tanda.getVaultBalance() == tanda.paymentAmount(), "Vault should have payment amount");
         
         // Check Alice's balance decreased
-        require(usdc.balanceOf(alice) == 900 * 10**6, "Alice should have 900 USDC left");
+        require(usdc.balanceOf(alice) == 1000 * 10**6 - tanda.paymentAmount(), "Alice balance should decrease");
     }
     
     function test_PayTwiceShouldFail() public {
@@ -166,10 +177,12 @@ contract TandaTest is Test {
         
         // Check all have paid
         require(tanda.allHavePaid() == true, "All should have paid");
-        require(tanda.getVaultBalance() == PAYMENT_AMOUNT * 3, "Vault should have 300 USDC");
+        uint256 expectedBalance = tanda.paymentAmount() * 3;
+        require(tanda.getVaultBalance() == expectedBalance, "Vault should have correct balance");
         
         // Get alice balance before claim
         uint256 aliceBalanceBefore = usdc.balanceOf(alice);
+        uint256 cycleStartTimeBefore = tanda.cycleStartTime();
         
         // Claim (should go to alice as first recipient)
         tanda.claim();
@@ -177,7 +190,7 @@ contract TandaTest is Test {
         // Check alice received funds
         uint256 aliceBalanceAfter = usdc.balanceOf(alice);
         require(
-            aliceBalanceAfter == aliceBalanceBefore + (PAYMENT_AMOUNT * 3),
+            aliceBalanceAfter == aliceBalanceBefore + expectedBalance,
             "Alice should receive all vault funds"
         );
         
@@ -189,6 +202,10 @@ contract TandaTest is Test {
         
         // Check next recipient is bob
         require(tanda.getCurrentRecipient() == bob, "Next recipient should be bob");
+        
+        // Check cycle start time was reset (should equal current block timestamp)
+        require(tanda.cycleStartTime() == block.timestamp, "Cycle start time should be reset to current timestamp");
+        require(tanda.cycleStartTime() >= cycleStartTimeBefore, "Cycle start time should be reset");
         
         // Check all payment statuses reset
         require(tanda.hasPaidThisCycle(alice) == false, "Alice should be reset");
@@ -264,6 +281,77 @@ contract TandaTest is Test {
         // Try to remove bob - should fail
         vm.expectRevert();
         tanda.removeParticipant(bob);
+    }
+    
+    function test_PaymentWindowExpires() public {
+        // Alice pays
+        vm.prank(alice);
+        tanda.pay();
+        
+        // Fast forward past payment frequency window
+        vm.warp(block.timestamp + tanda.paymentFrequency() + 1);
+        
+        // Bob tries to pay - should fail because window expired
+        vm.prank(bob);
+        vm.expectRevert("Payment window for this cycle has expired");
+        tanda.pay();
+    }
+    
+    function test_ClaimAfterFrequencyPeriodEvenIfNotEveryonePaid() public {
+        // Only Alice pays
+        vm.prank(alice);
+        tanda.pay();
+        
+        uint256 aliceBalanceBefore = usdc.balanceOf(alice);
+        uint256 vaultBalance = tanda.getVaultBalance();
+        
+        // Fast forward past payment frequency window
+        vm.warp(block.timestamp + tanda.paymentFrequency() + 1);
+        
+        // Claim should succeed even though not everyone paid (frequency period passed)
+        tanda.claim();
+        
+        // Alice should receive the funds
+        uint256 aliceBalanceAfter = usdc.balanceOf(alice);
+        require(
+            aliceBalanceAfter == aliceBalanceBefore + vaultBalance,
+            "Alice should receive vault funds"
+        );
+        
+        // Check cycle advanced
+        require(tanda.cycleNumber() == 2, "Cycle should advance");
+        require(tanda.getCurrentRecipient() == bob, "Next recipient should be bob");
+    }
+    
+    function test_CannotClaimBeforeFrequencyPeriodIfNotEveryonePaid() public {
+        // Only Alice pays
+        vm.prank(alice);
+        tanda.pay();
+        
+        // Try to claim before frequency period - should fail
+        vm.expectRevert("Cannot claim yet - not everyone has paid and payment window hasn't expired");
+        tanda.claim();
+    }
+    
+    function test_CycleStartTimeResetsAfterClaim() public {
+        uint256 initialCycleStartTime = tanda.cycleStartTime();
+        
+        // All participants pay and claim
+        vm.prank(alice);
+        tanda.pay();
+        vm.prank(bob);
+        tanda.pay();
+        vm.prank(charlie);
+        tanda.pay();
+        
+        // Fast forward a bit
+        vm.warp(block.timestamp + 100);
+        
+        tanda.claim();
+        
+        // Check cycle start time was reset to current block timestamp
+        require(tanda.cycleStartTime() >= initialCycleStartTime + 100, "Cycle start time should reset");
+        require(tanda.cycleStartTime() == block.timestamp, "Cycle start time should be current timestamp");
     }
 }
 
