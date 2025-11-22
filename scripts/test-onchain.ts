@@ -1,5 +1,4 @@
 import { network } from "hardhat";
-import { decodeEventLog } from "viem";
 
 /**
  * Test script to verify deployed contract on-chain
@@ -81,9 +80,9 @@ try {
   console.log("  Payment Amount:", paymentAmount.toString(), "(10 USDC)");
   console.log("  Payment Frequency:", paymentFrequency.toString(), "seconds (30 days)");
   
-  // First, simulate to see what address would be created (for verification)
-  // Note: This is simulated, so the actual address will be different when we execute
-  console.log("Simulating Tanda creation...");
+  // First, simulate to get the return value (the Tanda address)
+  // Note: CREATE uses nonce, so the address is deterministic - this should match!
+  console.log("Simulating Tanda creation to get address...");
   const simulateResult = await client.simulateContract({
     address: FACTORY_ADDRESS,
     abi: factory.abi,
@@ -91,10 +90,14 @@ try {
     args: [participants, paymentAmount, paymentFrequency],
     account: deployerAddress,
   });
-  console.log("✓ Simulation successful (this shows the function works)");
+  
+  // Get the return value (Tanda address) from simulation
+  const simulatedTandaAddress = simulateResult.result as `0x${string}`;
+  console.log("✓ Simulation successful");
+  console.log("📋 Predicted Tanda address:", simulatedTandaAddress);
   
   // Now actually create the Tanda
-  console.log("Executing Tanda creation transaction...");
+  console.log("\nExecuting Tanda creation transaction...");
   const txHash = await factory.write.createTanda([
     participants,
     paymentAmount,
@@ -108,81 +111,86 @@ try {
   const receipt = await client.waitForTransactionReceipt({ hash: txHash });
   console.log("✓ Transaction confirmed in block:", receipt.blockNumber);
   
+  // Try to read the TandaCreated event from the block
+  console.log("\nReading events from transaction...");
+  let createdTandaAddress: `0x${string}`;
+  
+  try {
+    const events = await client.getContractEvents({
+      address: FACTORY_ADDRESS,
+      abi: factory.abi,
+      eventName: "TandaCreated",
+      fromBlock: receipt.blockNumber,
+      toBlock: receipt.blockNumber,
+    });
+    
+    if (events.length > 0) {
+      const lastEvent = events[events.length - 1];
+      const eventTandaAddress = (lastEvent.args as any).tandaAddress as `0x${string}`;
+      console.log("✓ Found TandaCreated event!");
+      console.log("📋 Tanda address from event:", eventTandaAddress);
+      // Use the event address if found
+      createdTandaAddress = eventTandaAddress;
+    } else {
+      console.log("⚠ No TandaCreated event found, using simulated address");
+      // Fall back to simulated address (should match due to CREATE determinism)
+      createdTandaAddress = simulatedTandaAddress;
+    }
+  } catch (e: any) {
+    console.log("⚠ Could not read events:", e.message);
+    console.log("📋 Using simulated address:", simulatedTandaAddress);
+    createdTandaAddress = simulatedTandaAddress;
+  }
+  
   if (receipt.status !== "success") {
     throw new Error("Transaction failed!");
   }
   
   console.log("\n=== Test 5: Verify Created Tanda ===");
+  console.log("📋 Tanda Contract Address:", createdTandaAddress);
   
-  // Parse the TandaCreated event from the transaction logs
-  const tandaCreatedEvent = receipt.logs.find((log: any) => {
-    // Check if this log matches the TandaCreated event signature
-    // Event signature: TandaCreated(address,address,address[],uint256,uint256)
-    try {
-      const decoded = decodeEventLog({
-        abi: factory.abi,
-        data: log.data,
-        topics: log.topics,
-      });
-      return decoded.eventName === "TandaCreated";
-    } catch {
-      return false;
-    }
-  });
-  
-  if (!tandaCreatedEvent) {
-    console.log("⚠ Could not find TandaCreated event in logs");
-    console.log("  This might mean the factory was deployed before the event was added");
-    console.log("  Check transaction on block explorer to verify Tanda was created");
-    console.log("  Transaction hash:", txHash);
+  // Verify the Tanda contract exists and is readable
+  const tandaCode = await client.getBytecode({ address: createdTandaAddress });
+  if (tandaCode && tandaCode !== "0x") {
+    console.log("✓ Tanda contract has code deployed");
   } else {
-    // Decode the event
-    const decodedEvent = decodeEventLog({
-      abi: factory.abi,
-      data: tandaCreatedEvent.data,
-      topics: tandaCreatedEvent.topics,
-    });
-    
-    const createdTandaAddress = (decodedEvent.args as any).tandaAddress as `0x${string}`;
-    console.log("✓ Tanda created at address:", createdTandaAddress);
-    
-    // Verify the Tanda contract exists and is readable
-    const tandaCode = await client.getBytecode({ address: createdTandaAddress });
-    if (tandaCode && tandaCode !== "0x") {
-      console.log("✓ Tanda contract has code deployed");
-    } else {
-      console.error("✗ Tanda contract has no code - creation may have failed");
-      process.exit(1);
-    }
-    
-    // Get Tanda contract instance and verify parameters
-    const tanda = await viem.getContractAt("Tanda", createdTandaAddress);
-    const tandaUSDC = await tanda.read.usdcToken();
-    const tandaPaymentAmount = await tanda.read.paymentAmount();
-    const tandaPaymentFrequency = await tanda.read.paymentFrequency();
-    const tandaParticipants = await tanda.read.getParticipants();
-    const currentRecipient = await tanda.read.getCurrentRecipient();
-    
-    console.log("\n✓ Tanda Contract Verification:");
-    console.log("  USDC Token:", tandaUSDC);
-    console.log("  Payment Amount:", tandaPaymentAmount.toString());
-    console.log("  Payment Frequency:", tandaPaymentFrequency.toString());
-    console.log("  Participants:", tandaParticipants.length);
-    console.log("  Current Recipient:", currentRecipient);
-    
-    // Verify values match
-    if (tandaPaymentAmount !== paymentAmount) {
-      throw new Error("Payment amount mismatch!");
-    }
-    if (tandaPaymentFrequency !== paymentFrequency) {
-      throw new Error("Payment frequency mismatch!");
-    }
-    if (tandaParticipants.length !== participants.length) {
-      throw new Error("Participants count mismatch!");
-    }
-    
-    console.log("\n✅ Tanda created successfully and verified!");
+    console.error("✗ Tanda contract has no code - creation may have failed");
+    process.exit(1);
   }
+  
+  // Get Tanda contract instance and verify parameters
+  const tanda = await viem.getContractAt("Tanda", createdTandaAddress);
+  const tandaUSDC = await tanda.read.usdcToken();
+  const tandaPaymentAmount = await tanda.read.paymentAmount();
+  const tandaPaymentFrequency = await tanda.read.paymentFrequency();
+  const tandaParticipants = await tanda.read.getParticipants();
+  const currentRecipient = await tanda.read.getCurrentRecipient();
+  
+  console.log("\n✓ Tanda Contract Verification:");
+  console.log("  Address:", createdTandaAddress);
+  console.log("  USDC Token:", tandaUSDC);
+  console.log("  Payment Amount:", tandaPaymentAmount.toString());
+  console.log("  Payment Frequency:", tandaPaymentFrequency.toString());
+  console.log("  Participants:", tandaParticipants.length);
+  console.log("  Current Recipient:", currentRecipient);
+  
+  // Verify values match
+  if (tandaPaymentAmount !== paymentAmount) {
+    throw new Error("Payment amount mismatch!");
+  }
+  if (tandaPaymentFrequency !== paymentFrequency) {
+    throw new Error("Payment frequency mismatch!");
+  }
+  if (tandaParticipants.length !== participants.length) {
+    throw new Error("Participants count mismatch!");
+  }
+  
+  console.log("\n✅ Tanda created successfully and verified!");
+  console.log("\n" + "=".repeat(60));
+  console.log("📋 SAVE THIS ADDRESS FOR FRONTEND:");
+  console.log("   Tanda Address:", createdTandaAddress);
+  console.log("   Transaction:", txHash);
+  console.log("=".repeat(60));
   
 } catch (error: any) {
   console.error("✗ Failed to create Tanda:", error.message);
