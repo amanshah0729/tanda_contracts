@@ -1,0 +1,170 @@
+// SPDX-License-Identifier: UNLICENSED
+pragma solidity ^0.8.28;
+
+interface IERC20 {
+    function transfer(address to, uint256 amount) external returns (bool);
+    function transferFrom(address from, address to, uint256 amount) external returns (bool);
+    function balanceOf(address account) external view returns (uint256);
+}
+
+contract Tanda {
+    IERC20 public usdcToken; // USDC.e token address
+    
+    // Hardcoded values - can be changed later
+    uint256 public constant PAYMENT_AMOUNT = 100 * 10**6; // 100 USDC.e (6 decimals)
+    
+    // Participant management
+    address[] public participants;
+    mapping(address => bool) public isParticipant;
+    
+    // Current cycle tracking
+    mapping(address => bool) public hasPaidThisCycle;
+    uint256 public currentRecipientIndex; // Who gets the funds this cycle
+    uint256 public cycleNumber;
+    
+    // Events
+    event PaymentReceived(address indexed payer, uint256 amount, uint256 cycle);
+    event FundsClaimed(address indexed recipient, uint256 amount, uint256 cycle);
+    event ParticipantAdded(address indexed participant);
+    event ParticipantRemoved(address indexed participant);
+    event NewCycleStarted(uint256 cycleNumber);
+    
+    constructor(address _usdcToken, address[] memory _initialParticipants) {
+        usdcToken = IERC20(_usdcToken);
+        require(_initialParticipants.length > 0, "Must have at least one participant");
+        
+        // Add initial participants
+        for (uint256 i = 0; i < _initialParticipants.length; i++) {
+            require(_initialParticipants[i] != address(0), "Invalid address");
+            participants.push(_initialParticipants[i]);
+            isParticipant[_initialParticipants[i]] = true;
+        }
+        
+        currentRecipientIndex = 0;
+        cycleNumber = 1;
+    }
+    
+    // Pay function - transfers USDC.e and marks as paid
+    function pay() external {
+        require(isParticipant[msg.sender], "Not a participant");
+        require(!hasPaidThisCycle[msg.sender], "Already paid this cycle");
+        
+        // Transfer USDC.e from user to contract
+        require(
+            usdcToken.transferFrom(msg.sender, address(this), PAYMENT_AMOUNT),
+            "Payment transfer failed"
+        );
+        
+        hasPaidThisCycle[msg.sender] = true;
+        emit PaymentReceived(msg.sender, PAYMENT_AMOUNT, cycleNumber);
+    }
+    
+    // Claim function - sends all funds to current recipient and starts new cycle
+    function claim() external {
+        require(
+            hasPaidThisCycle[participants[currentRecipientIndex]],
+            "Current recipient hasn't paid yet"
+        );
+        require(allHavePaid(), "Not everyone has paid yet");
+        
+        uint256 contractBalance = usdcToken.balanceOf(address(this));
+        require(contractBalance > 0, "No funds to claim");
+        
+        address recipient = participants[currentRecipientIndex];
+        
+        // Transfer all USDC.e to recipient
+        require(
+            usdcToken.transfer(recipient, contractBalance),
+            "Claim transfer failed"
+        );
+        
+        emit FundsClaimed(recipient, contractBalance, cycleNumber);
+        
+        // Reset cycle - wipe all payment statuses
+        for (uint256 i = 0; i < participants.length; i++) {
+            hasPaidThisCycle[participants[i]] = false;
+        }
+        
+        // Move to next recipient (wrap around)
+        currentRecipientIndex = (currentRecipientIndex + 1) % participants.length;
+        cycleNumber++;
+        
+        emit NewCycleStarted(cycleNumber);
+    }
+    
+    // View function - get list of who hasn't paid
+    function getUnpaidParticipants() external view returns (address[] memory) {
+        address[] memory unpaid = new address[](participants.length);
+        uint256 unpaidCount = 0;
+        
+        for (uint256 i = 0; i < participants.length; i++) {
+            if (!hasPaidThisCycle[participants[i]]) {
+                unpaid[unpaidCount] = participants[i];
+                unpaidCount++;
+            }
+        }
+        
+        // Resize array to actual count
+        address[] memory result = new address[](unpaidCount);
+        for (uint256 i = 0; i < unpaidCount; i++) {
+            result[i] = unpaid[i];
+        }
+        
+        return result;
+    }
+    
+    // Helper function to check if all have paid
+    function allHavePaid() public view returns (bool) {
+        for (uint256 i = 0; i < participants.length; i++) {
+            if (!hasPaidThisCycle[participants[i]]) {
+                return false;
+            }
+        }
+        return true;
+    }
+    
+    // Get current recipient
+    function getCurrentRecipient() external view returns (address) {
+        return participants[currentRecipientIndex];
+    }
+    
+    // Get contract balance
+    function getVaultBalance() external view returns (uint256) {
+        return usdcToken.balanceOf(address(this));
+    }
+    
+    // Get all participants
+    function getParticipants() external view returns (address[] memory) {
+        return participants;
+    }
+    
+    // Add participant (mutable)
+    function addParticipant(address _participant) external {
+        require(_participant != address(0), "Invalid address");
+        require(!isParticipant[_participant], "Already a participant");
+        
+        participants.push(_participant);
+        isParticipant[_participant] = true;
+        emit ParticipantAdded(_participant);
+    }
+    
+    // Remove participant (mutable) - hacky but works
+    function removeParticipant(address _participant) external {
+        require(isParticipant[_participant], "Not a participant");
+        require(!hasPaidThisCycle[_participant], "Cannot remove participant who has paid");
+        
+        // Find and remove from array
+        for (uint256 i = 0; i < participants.length; i++) {
+            if (participants[i] == _participant) {
+                // Move last element to this position
+                participants[i] = participants[participants.length - 1];
+                participants.pop();
+                break;
+            }
+        }
+        
+        isParticipant[_participant] = false;
+        emit ParticipantRemoved(_participant);
+    }
+}
+
