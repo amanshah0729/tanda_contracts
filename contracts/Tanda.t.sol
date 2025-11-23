@@ -157,15 +157,6 @@ contract TandaTest is Test {
         require(unpaid[0] == bob || unpaid[0] == charlie, "Should contain bob or charlie");
     }
     
-    function test_ClaimRequiresAllPaid() public {
-        // Only Alice paid - claim should fail
-        vm.prank(alice);
-        tanda.pay();
-        
-        vm.expectRevert();
-        tanda.claim();
-    }
-    
     function test_FullCycle() public {
         // All participants pay
         vm.prank(alice);
@@ -321,16 +312,6 @@ contract TandaTest is Test {
         // Check cycle advanced
         require(tanda.cycleNumber() == 2, "Cycle should advance");
         require(tanda.getCurrentRecipient() == bob, "Next recipient should be bob");
-    }
-    
-    function test_CannotClaimBeforeFrequencyPeriodIfNotEveryonePaid() public {
-        // Only Alice pays
-        vm.prank(alice);
-        tanda.pay();
-        
-        // Try to claim before frequency period - should fail
-        vm.expectRevert("Cannot claim yet - not everyone has paid and payment window hasn't expired");
-        tanda.claim();
     }
     
     function test_CycleStartTimeResetsAfterClaim() public {

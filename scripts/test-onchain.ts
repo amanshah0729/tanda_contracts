@@ -9,7 +9,7 @@ const { viem, networkName } = await network.connect();
 const client = await viem.getPublicClient();
 
 // Your deployed TandaFactory address
-const FACTORY_ADDRESS = "0x1d8abc392e739eb267667fb5c715e90f35c90233" as `0x${string}`;
+const FACTORY_ADDRESS = "0x2aef2dadd6d888c58fdf57d20721d49ea25d9583" as `0x${string}`;
 
 console.log(`Testing TandaFactory on ${networkName}...\n`);
 console.log("Factory Address:", FACTORY_ADDRESS);

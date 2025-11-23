@@ -105,6 +105,8 @@ contract Tanda {
             usdcToken.transfer(recipient, contractBalance),
             "Claim transfer failed"
         );
+
+
         
         emit FundsClaimed(recipient, contractBalance, cycleNumber);
         
