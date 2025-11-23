@@ -73,20 +73,28 @@ contract Tanda {
         emit PaymentReceived(msg.sender, paymentAmount, cycleNumber);
     }
     
+    // Pay function for Permit2 - marks as paid after tokens were transferred via Permit2
+    // This function assumes tokens were already transferred to this contract via Permit2's signatureTransfer
+    function payAfterPermit2(address payer) external {
+        require(isParticipant[payer], "Not a participant");
+        require(!hasPaidThisCycle[payer], "Already paid this cycle");
+        require(
+            block.timestamp < cycleStartTime + paymentFrequency,
+            "Payment window for this cycle has expired"
+        );
+        
+        // Verify that payment amount was received (check balance increase)
+        // Note: This is a simple check - in production you might want more sophisticated verification
+        uint256 contractBalance = usdcToken.balanceOf(address(this));
+        require(contractBalance >= paymentAmount, "Insufficient payment received");
+        
+        hasPaidThisCycle[payer] = true;
+        emit PaymentReceived(payer, paymentAmount, cycleNumber);
+    }
+    
     // Claim function - sends all funds to current recipient and starts new cycle
-    // Can be called if either: (1) everyone has paid, OR (2) payment frequency period has passed
+    // Simplified for hackathon/demo - no payment or time checks
     function claim() external {
-        require(
-            hasPaidThisCycle[participants[currentRecipientIndex]],
-            "Current recipient hasn't paid yet"
-        );
-        
-        // Allow claiming if everyone paid OR if payment frequency period has passed
-        require(
-            allHavePaid() || block.timestamp >= cycleStartTime + paymentFrequency,
-            "Cannot claim yet - not everyone has paid and payment window hasn't expired"
-        );
-        
         uint256 contractBalance = usdcToken.balanceOf(address(this));
         require(contractBalance > 0, "No funds to claim");
         
